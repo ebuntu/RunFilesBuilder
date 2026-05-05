@@ -100,4 +100,3 @@ EOF
             - **內置檔案**: luci-theme-argon_all.ipk
           files: output/*.run
           token: ${{ secrets.GITHUB_TOKEN }}
-          token: ${{ secrets.GITHUB_TOKEN }}
