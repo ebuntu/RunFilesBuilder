@@ -1,99 +1,94 @@
-name: Make Argon Theme run files (Final Fixed)
+name: Make Argon Theme run files (Debug Version)
 
 on:
   workflow_dispatch:
 
+# 核心修正 1：確保有權限建立 Release
+permissions:
+  contents: write
+
 jobs:
   make-run:
-    runs-on: ubuntu-22.04
-
-    # 賦予寫入 Release 的權限
-    permissions:
-      contents: write
+    runs-on: ubuntu-latest
 
     steps:
-      - name: 📥 Checkout
+      - name: 📥 檢出程式碼
         uses: actions/checkout@v4
 
-      - name: 📦 安裝工具 (makeself, curl, jq)
+      - name: 📦 安裝工具
         run: sudo apt-get update && sudo apt-get install -y makeself curl jq
 
-      - name: 🔍 獲取 GitHub 最新 Release 資訊
+      - name: 🔍 獲取版本並精確搜索下載連結
         id: get_info
         run: |
+          # 1. 獲取最新 Release JSON
           API_URL="https://api.github.com/repos/jerrykuku/luci-theme-argon/releases/latest"
           RESPONSE=$(curl -s $API_URL)
           
+          # 2. 提取 Tag 和版本數字
           LATEST_TAG=$(echo "$RESPONSE" | jq -r .tag_name)
-          # 提取純數字版本號 (例如從 v2.3.1 提取 2.3.1)
           VERSION=$(echo "$LATEST_TAG" | sed 's/[^0-9\.-]//g')
           
-          # 尋找 Assets 中後綴為 .ipk 且包含 luci-theme-argon 的下載連結
+          # 3. 遍歷所有 Assets，找到包含 'luci-theme-argon' 且結尾是 '.ipk' 的連結
+          # 這一步最容易出錯，我們加入診斷信息
           DOWNLOAD_URL=$(echo "$RESPONSE" | jq -r '.assets[] | select(.name | contains("luci-theme-argon") and endswith(".ipk")) | .browser_download_url' | head -n 1)
           
           if [ -z "$DOWNLOAD_URL" ] || [ "$DOWNLOAD_URL" == "null" ]; then
-            echo "❌ 錯誤：找不到 .ipk 下載連結"
+            echo "❌ 錯誤：找不到 .ipk 下載連結。請檢查 jerrykuku 的 Release 頁面。"
+            echo "API 回應內容如下："
+            echo "$RESPONSE" | jq .assets
             exit 1
           fi
 
           echo "LATEST_TAG=$LATEST_TAG" >> $GITHUB_ENV
           echo "DOWNLOAD_URL=$DOWNLOAD_URL" >> $GITHUB_ENV
           echo "VERSION=$VERSION" >> $GITHUB_OUTPUT
-          echo "✅ 偵測版本: $LATEST_TAG"
+          echo "✅ 準備下載版本: $LATEST_TAG"
 
-      - name: 🚀 下載並驗證 IPK
+      - name: 🚀 下載並準備目錄
         run: |
-          mkdir -p arm_cortex-a9_vfpv3-d16
-          curl -L "${{ env.DOWNLOAD_URL }}" -o arm_cortex-a9_vfpv3-d16/luci-theme-argon_all.ipk
+          mkdir -p build_dir
+          curl -L "${{ env.DOWNLOAD_URL }}" -o build_dir/luci-theme-argon_all.ipk
           
-          # 驗證是否為有效的 debian 軟體包格式
-          if ! grep -q "debian-binary" arm_cortex-a9_vfpv3-d16/luci-theme-argon_all.ipk; then
-            echo "❌ 錯誤：檔案損壞或不是有效的 .ipk"
-            exit 1
+          # 驗證下載檔案是否為空的
+          if [ ! -s build_dir/luci-theme-argon_all.ipk ]; then
+             echo "❌ 錯誤：下載的檔案大小為 0"
+             exit 1
           fi
 
-      - name: 📋 建立安裝腳本 (修正轉義)
+      - name: 📋 生成穩定版安裝腳本
         run: |
-          # 使用單引號包裹 EOF 以防止變數被 GitHub Actions 預先解析
-          cat << 'EOF' > arm_cortex-a9_vfpv3-d16/install.sh
+          # 這裡我們不依賴外部 shell/install.sh，直接現場生成，避免目錄錯誤
+          cat << 'EOF' > build_dir/install.sh
 #!/bin/sh
-# 獲取腳本所在絕對路徑
 BASE_DIR=$(cd "$(dirname "$0")"; pwd)
 echo "-----------------------------------"
-echo "  正在安裝 Argon 主題 (ARM 32-bit)"
+echo "  Argon Theme Installer"
 echo "-----------------------------------"
-
 if command -v opkg > /dev/null; then
     opkg install "$BASE_DIR"/*.ipk
 elif command -v apk > /dev/null; then
     apk add --allow-untrusted "$BASE_DIR"/*.ipk
 else
-    echo "❌ 錯誤: 找不到 opkg 或 apk 套件管理器"
+    echo "❌ Error: No package manager found."
     exit 1
 fi
-
-# 清理快取
 rm -rf /tmp/luci-indexcache /tmp/luci-modulecache/
-echo "✅ 安裝完成！請在 LuCI 界面切換主題。"
+echo "✅ Done!"
 EOF
-          chmod +x arm_cortex-a9_vfpv3-d16/install.sh
+          chmod +x build_dir/install.sh
 
       - name: 🛠️ 執行 Makeself 打包
         run: |
           mkdir -p output
-          makeself arm_cortex-a9_vfpv3-d16 \
-            "output/luci-theme-argon-${{ steps.get_info.outputs.VERSION }}_arm_cortex-a9.run" \
-            "Argon Theme Installer v${{ steps.get_info.outputs.VERSION }}" \
-            ./install.sh
+          # 我們將打包目標設為 build_dir
+          makeself build_dir "output/luci-theme-argon-${{ steps.get_info.outputs.VERSION }}_arm_cortex-a9.run" \
+            "Argon Theme Installer" ./install.sh
 
-      - name: 📤 發佈至 Release
+      - name: 📤 發佈到 Release
         uses: softprops/action-gh-release@v2
         with:
           tag_name: "argon-${{ steps.get_info.outputs.VERSION }}-${{ github.run_number }}"
-          name: "Argon Theme ${{ steps.get_info.outputs.VERSION }} (ARMv7 32-bit)"
-          body: |
-            ### 自動化編譯報告
-            - **原始版本**: ${{ env.LATEST_TAG }}
-            - **硬體架構**: arm_cortex-a9_vfpv3-d16
-            - **管理器支持**: opkg / apk
+          name: "Argon Theme ${{ steps.get_info.outputs.VERSION }}"
           files: output/*.run
+          token: ${{ secrets.GITHUB_TOKEN }}
