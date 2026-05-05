@@ -1,4 +1,4 @@
-name: Make Argon Theme run files
+name: Make Argon Theme run files (Stable API)
 
 on:
   workflow_dispatch:
@@ -11,60 +11,85 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      - name: 📥 Checkout
+      - name: 📥 Checkout code
         uses: actions/checkout@v4
 
-      - name: 📦 Install tools
+      - name: 📦 Install tools (makeself, curl, jq)
         run: sudo apt-get update && sudo apt-get install -y makeself curl jq
 
-      - name: 🔍 Get Latest Info
+      - name: 🔍 Get Latest Release Info (Auth Version)
         id: get_info
         run: |
+          # 使用 GITHUB_TOKEN 避免 API 速率限制 (Rate Limit)
           API_URL="https://api.github.com/repos/jerrykuku/luci-theme-argon/releases/latest"
-          RESPONSE=$(curl -s "$API_URL")
+          RESPONSE=$(curl -s -H "Authorization: token ${{ secrets.GITHUB_TOKEN }}" "$API_URL")
+          
+          # 檢查 API 是否回傳錯誤訊息
+          if echo "$RESPONSE" | jq -e .message > /dev/null; then
+            echo "❌ GitHub API 報錯: $(echo "$RESPONSE" | jq -r .message)"
+            exit 1
+          fi
+
           LATEST_TAG=$(echo "$RESPONSE" | jq -r .tag_name)
+          # 提取純數字版本號 (例如 2.3.1)
           VERSION=$(echo "$LATEST_TAG" | sed 's/[^0-9\.-]//g')
-          DOWNLOAD_URL=$(echo "$RESPONSE" | jq -r '.assets[] | select(.name | contains("luci-theme-argon") and endswith(".ipk")) | .browser_download_url' | head -n 1)
+          
+          # 智慧型搜尋 Assets：匹配包含 luci-theme-argon 且結尾是 all.ipk 的檔案
+          DOWNLOAD_URL=$(echo "$RESPONSE" | jq -r '.assets[] | select(.name | test("luci-theme-argon.*all\\.ipk")) | .browser_download_url' | head -n 1)
           
           if [ -z "$DOWNLOAD_URL" ] || [ "$DOWNLOAD_URL" == "null" ]; then
-            echo "❌ Error: Cannot find IPK"
+            echo "❌ 錯誤：找不到對應的 .ipk 檔案連結"
+            echo "目前的檔案列表為："
+            echo "$RESPONSE" | jq -r '.assets[].name'
             exit 1
           fi
 
           echo "LATEST_TAG=$LATEST_TAG" >> $GITHUB_ENV
           echo "DOWNLOAD_URL=$DOWNLOAD_URL" >> $GITHUB_ENV
           echo "VERSION=$VERSION" >> $GITHUB_OUTPUT
+          echo "✅ 成功鎖定版本: $LATEST_TAG"
 
       - name: 🚀 Download IPK
         run: |
           mkdir -p build_dir
           curl -L "${{ env.DOWNLOAD_URL }}" -o build_dir/luci-theme-argon_all.ipk
+          
+          # 格式驗證
+          if ! grep -q "debian-binary" build_dir/luci-theme-argon_all.ipk; then
+            echo "❌ 錯誤：檔案格式損壞"
+            exit 1
+          fi
 
       - name: 📋 Create Installer Script
-        # 使用 printf 代替 cat << EOF，徹底避開縮進導致的語法錯誤
         run: |
           printf '#!/bin/sh\n' > build_dir/install.sh
           printf 'BASE_DIR=$(cd "$(dirname "$0")"; pwd)\n' >> build_dir/install.sh
-          printf 'echo "Installing Argon Theme..."\n' >> build_dir/install.sh
+          printf 'echo "-----------------------------------"\n' >> build_dir/install.sh
+          printf 'echo "  Installing Argon Theme (v%s)"\n' "${{ steps.get_info.outputs.VERSION }}" >> build_dir/install.sh
+          printf 'echo "-----------------------------------"\n' >> build_dir/install.sh
           printf 'if command -v opkg > /dev/null; then\n' >> build_dir/install.sh
           printf '    opkg install "$BASE_DIR"/*.ipk\n' >> build_dir/install.sh
           printf 'elif command -v apk > /dev/null; then\n' >> build_dir/install.sh
           printf '    apk add --allow-untrusted "$BASE_DIR"/*.ipk\n' >> build_dir/install.sh
           printf 'fi\n' >> build_dir/install.sh
           printf 'rm -rf /tmp/luci-indexcache /tmp/luci-modulecache/\n' >> build_dir/install.sh
-          printf 'echo "Done!"\n' >> build_dir/install.sh
+          printf 'echo "✅ Done!"\n' >> build_dir/install.sh
           chmod +x build_dir/install.sh
 
-      - name: 🛠️ Run Makeself
+      - name: 🛠️ Run Makeself 打包
         run: |
           mkdir -p output
           makeself build_dir "output/luci-theme-argon-${{ steps.get_info.outputs.VERSION }}_arm_cortex-a9.run" "Argon Installer" ./install.sh
 
-      - name: 📤 Release
+      - name: 📤 Release to GitHub
         uses: softprops/action-gh-release@v2
         with:
           tag_name: "argon-${{ steps.get_info.outputs.VERSION }}-${{ github.run_number }}"
           name: "Argon Theme v${{ steps.get_info.outputs.VERSION }}"
-          body: "Build from upstream: ${{ env.LATEST_TAG }}"
+          body: |
+            ### 自動化建置報告
+            - **上游版本**: ${{ env.LATEST_TAG }}
+            - **建置編號**: ${{ github.run_number }}
+            - **硬體架構**: arm_cortex-a9 (通用 IPK)
           files: output/*.run
           token: ${{ secrets.GITHUB_TOKEN }}
