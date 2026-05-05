@@ -1,0 +1,99 @@
+name: Make Argon Theme run files (Legacy IPK Support)
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  make-run:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: 📥 Checkout code
+        uses: actions/checkout@v4
+
+      - name: 📦 Install tools (makeself, curl, jq)
+        run: sudo apt-get update && sudo apt-get install -y makeself curl jq
+
+      - name: 🔍 Get Latest IPK Info (Skip APK)
+        id: get_info
+        run: |
+          # 1. 先嘗試從最新版本找 IPK
+          API_URL="https://api.github.com/repos/jerrykuku/luci-theme-argon/releases/latest"
+          RESPONSE=$(curl -s -H "Authorization: token ${{ secrets.GITHUB_TOKEN }}" "$API_URL")
+          DOWNLOAD_URL=$(echo "$RESPONSE" | jq -r '.assets[] | select(.name | endswith(".ipk")) | .browser_download_url' | head -n 1)
+
+          # 2. 如果最新版沒有 IPK (只有 APK)，則搜尋近期的所有 Release 找到有 IPK 的為止
+          if [ -z "$DOWNLOAD_URL" ] || [ "$DOWNLOAD_URL" == "null" ]; then
+            echo "⚠️ 最新版不含 IPK，正在回溯搜尋舊版本..."
+            DOWNLOAD_URL=$(curl -s -H "Authorization: token ${{ secrets.GITHUB_TOKEN }}" "https://api.github.com/repos/jerrykuku/luci-theme-argon/releases" | \
+              jq -r '.[].assets[] | select(.name | endswith(".ipk")) | .browser_download_url' | head -n 1)
+          fi
+
+          if [ -z "$DOWNLOAD_URL" ] || [ "$DOWNLOAD_URL" == "null" ]; then
+            echo "❌ 錯誤：找不到任何可用的 .ipk 檔案"
+            exit 1
+          fi
+
+          # 提取下載資訊
+          FILE_NAME=$(echo "$DOWNLOAD_URL" | sed 's/.*\///')
+          # 從檔名粗略提取版本號
+          VERSION=$(echo "$FILE_NAME" | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -n 1)
+          [ -z "$VERSION" ] && VERSION="legacy"
+
+          echo "DOWNLOAD_URL=$DOWNLOAD_URL" >> $GITHUB_ENV
+          echo "FILE_NAME=$FILE_NAME" >> $GITHUB_ENV
+          echo "VERSION=$VERSION" >> $GITHUB_OUTPUT
+          echo "✅ 成功鎖定 IPK: $FILE_NAME"
+
+      - name: 🚀 Download IPK
+        run: |
+          mkdir -p build_dir
+          curl -L "${{ env.DOWNLOAD_URL }}" -o "build_dir/${{ env.FILE_NAME }}"
+          
+          # 基本二進位驗證
+          if ! grep -q "debian-binary" build_dir/*.ipk; then
+            echo "❌ 錯誤：下載的 IPK 格式不正確"
+            exit 1
+          fi
+
+      - name: 📋 Create Installer Script (Opkg Optimized)
+        run: |
+          # 這次針對 opkg 系統進行優化，移除 apk 邏輯避免混淆
+          printf '#!/bin/sh\n' > build_dir/install.sh
+          printf 'BASE_DIR=$(cd "$(dirname "$0")"; pwd)\n' >> build_dir/install.sh
+          printf 'echo "-----------------------------------"\n' >> build_dir/install.sh
+          printf 'echo "  Installing Argon Theme (Legacy IPK)"\n' >> build_dir/install.sh
+          printf 'echo "-----------------------------------"\n' >> build_dir/install.sh
+          
+          printf 'if command -v opkg > /dev/null; then\n' >> build_dir/install.sh
+          printf '    echo "正在安裝: ${{ env.FILE_NAME }}..."\n' >> build_dir/install.sh
+          printf '    opkg install "$BASE_DIR"/*.ipk\n' >> build_dir/install.sh
+          printf '    rm -rf /tmp/luci-indexcache /tmp/luci-modulecache/\n' >> build_dir/install.sh
+          printf '    echo "✅ 安裝完成！"\n' >> build_dir/install.sh
+          printf 'else\n' >> build_dir/install.sh
+          printf '    echo "❌ 錯誤: 找不到 opkg 指令，此系統可能不支援 IPK"\n' >> build_dir/install.sh
+          printf '    exit 1\n' >> build_dir/install.sh
+          printf 'fi\n' >> build_dir/install.sh
+          
+          chmod +x build_dir/install.sh
+
+      - name: 🛠️ Run Makeself
+        run: |
+          mkdir -p output
+          makeself build_dir "output/luci-theme-argon-${{ steps.get_info.outputs.VERSION }}_legacy_arm.run" "Argon Legacy Installer" ./install.sh
+
+      - name: 📤 Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: "argon-ipk-${{ steps.get_info.outputs.VERSION }}-${{ github.run_number }}"
+          name: "Argon Theme (Legacy IPK Version)"
+          body: |
+            ### 專為舊版 OpenWrt 構建
+            - **支援系統**: 使用 opkg 的 OpenWrt 版本 (如 WRT32X)
+            - **內含檔案**: ${{ env.FILE_NAME }}
+            - **來源網址**: ${{ env.DOWNLOAD_URL }}
+          files: output/*.run
+          token: ${{ secrets.GITHUB_TOKEN }}
