@@ -1,0 +1,77 @@
+# Description: Build RunFiles using GitHub Actions
+# License: MIT
+# Author: wukongdaily (Modified for 32-bit ARM)
+#=================================================
+name: Make Argon Theme run files
+
+on:
+  workflow_dispatch:
+
+jobs:
+  make-run:
+    runs-on: ubuntu-22.04
+
+    steps:
+      - name: 📥 Checkout
+        uses: actions/checkout@v3
+
+      - name: 📦 安装 makeself 工具
+        run: sudo apt-get update && sudo apt-get install -y makeself curl
+
+      - name: 🚀 下载argon所有ipk
+        run: |
+          chmod +x shell/argon.sh
+          ./shell/argon.sh
+          # 注意：請確保你的 argon.sh 腳本內有下載 arm_cortex-a9 或 all 架構的 ipk 並放入對應資料夾
+
+      - name: 📋 準備目錄與拷貝 install.sh
+        run: |
+          # 確保 32 位元目錄存在 (依照你的 OpenWrt ARCH 命名)
+          mkdir -p arm_cortex-a9_vfpv3-d16
+          
+          # 拷貝安裝腳本到所有目標目錄
+          for PLATFORM in x86_64 aarch64_generic arm_cortex-a9_vfpv3-d16; do
+            if [ -d "$PLATFORM" ]; then
+              cp shell/install.sh "$PLATFORM"/install.sh
+              chmod +x "$PLATFORM"/install.sh
+            fi
+          done
+
+      - name: 🔍 提取版本号并打包
+        id: pack
+        run: |
+          mkdir -p output
+
+          # 使用 aarch64 或 arm 的 ipk 提取版本號均可
+          ARGON_IPK=$(ls aarch64_generic/luci-theme-argon_*.ipk 2>/dev/null | head -n 1)
+          if [ -z "$ARGON_IPK" ]; then
+            ARGON_IPK=$(ls arm_cortex-a9_vfpv3-d16/luci-theme-argon_*.ipk 2>/dev/null | head -n 1)
+          fi
+          
+          VERSION=$(basename "$ARGON_IPK" | sed -n 's/^luci-theme-argon_\([^-]*-[^_]*\)_.*$/\1/p')
+
+          if [ -z "$VERSION" ]; then
+            echo "❌ 无法提取版本号，請檢查 ipk 是否成功下載至目錄"
+            exit 1
+          fi
+
+          echo "version=$VERSION" >> $GITHUB_OUTPUT
+
+          # 遍歷三個平台進行打包 (增加 32位元的 arm_cortex-a9_vfpv3-d16)
+          for PLATFORM in x86_64 aarch64_generic arm_cortex-a9_vfpv3-d16; do
+            if [ -d "$PLATFORM" ] && [ "$(ls -A $PLATFORM)" ]; then
+              makeself "$PLATFORM" "output/luci-theme-argon-${VERSION}_${PLATFORM}.run" \
+                "argon ${PLATFORM} Installer v${VERSION}" ./install.sh
+            fi
+          done
+
+      - name: 📤 上传 .run 文件到 release
+        uses: softprops/action-gh-release@v2.1.0
+        with:
+          tag_name: "argon-${{ steps.pack.outputs.version }}"
+          name: "argon-${{ steps.pack.outputs.version }}"
+          body: "Auto-generated Argon Theme RunFiles for x86_64, aarch64, and arm_cortex-a9"
+          files: output/*.run
+          token: ${{ secrets.GITHUB_TOKEN }}
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
