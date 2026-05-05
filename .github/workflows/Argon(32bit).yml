@@ -41,32 +41,29 @@ jobs:
           curl -L "${{ env.DOWNLOAD_URL }}" -o build_dir/luci-theme-argon_all.ipk
 
       - name: 📋 Create Installer Script
+        # 使用 printf 代替 cat << EOF，徹底避開縮進導致的語法錯誤
         run: |
-          # 修正重點：確保這裡的縮進與 run: 對齊，且內容被正確寫入
-          cat << 'EOF' > build_dir/install.sh
-#!/bin/sh
-BASE_DIR=$(cd "$(dirname "$0")"; pwd)
-echo "Installing Argon Theme..."
-if command -v opkg > /dev/null; then
-    opkg install "$BASE_DIR"/*.ipk
-elif command -v apk > /dev/null; then
-    apk add --allow-untrusted "$BASE_DIR"/*.ipk
-fi
-rm -rf /tmp/luci-indexcache /tmp/luci-modulecache/
-echo "Done!"
-EOF
+          printf '#!/bin/sh\n' > build_dir/install.sh
+          printf 'BASE_DIR=$(cd "$(dirname "$0")"; pwd)\n' >> build_dir/install.sh
+          printf 'echo "Installing Argon Theme..."\n' >> build_dir/install.sh
+          printf 'if command -v opkg > /dev/null; then\n' >> build_dir/install.sh
+          printf '    opkg install "$BASE_DIR"/*.ipk\n' >> build_dir/install.sh
+          printf 'elif command -v apk > /dev/null; then\n' >> build_dir/install.sh
+          printf '    apk add --allow-untrusted "$BASE_DIR"/*.ipk\n' >> build_dir/install.sh
+          printf 'fi\n' >> build_dir/install.sh
+          printf 'rm -rf /tmp/luci-indexcache /tmp/luci-modulecache/\n' >> build_dir/install.sh
+          printf 'echo "Done!"\n' >> build_dir/install.sh
           chmod +x build_dir/install.sh
 
       - name: 🛠️ Run Makeself
         run: |
           mkdir -p output
-          # 使用 steps 變數時確保格式正確
           makeself build_dir "output/luci-theme-argon-${{ steps.get_info.outputs.VERSION }}_arm_cortex-a9.run" "Argon Installer" ./install.sh
 
       - name: 📤 Release
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: "v${{ steps.get_info.outputs.VERSION }}-${{ github.run_number }}"
+          tag_name: "argon-${{ steps.get_info.outputs.VERSION }}-${{ github.run_number }}"
           name: "Argon Theme v${{ steps.get_info.outputs.VERSION }}"
           body: "Build from upstream: ${{ env.LATEST_TAG }}"
           files: output/*.run
