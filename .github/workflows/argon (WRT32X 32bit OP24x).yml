@@ -1,4 +1,4 @@
-name: Make Argon Theme run files (Legacy IPK Support)
+name: Make Argon Theme run files (Legacy IPK Final)
 
 on:
   workflow_dispatch:
@@ -25,7 +25,7 @@ jobs:
           RESPONSE=$(curl -s -H "Authorization: token ${{ secrets.GITHUB_TOKEN }}" "$API_URL")
           DOWNLOAD_URL=$(echo "$RESPONSE" | jq -r '.assets[] | select(.name | endswith(".ipk")) | .browser_download_url' | head -n 1)
 
-          # 2. 如果最新版沒有 IPK (只有 APK)，則搜尋近期的所有 Release 找到有 IPK 的為止
+          # 2. 如果最新版沒有 IPK，則搜尋所有 Release 找到最近一個包含 .ipk 的版本
           if [ -z "$DOWNLOAD_URL" ] || [ "$DOWNLOAD_URL" == "null" ]; then
             echo "⚠️ 最新版不含 IPK，正在回溯搜尋舊版本..."
             DOWNLOAD_URL=$(curl -s -H "Authorization: token ${{ secrets.GITHUB_TOKEN }}" "https://api.github.com/repos/jerrykuku/luci-theme-argon/releases" | \
@@ -37,9 +37,8 @@ jobs:
             exit 1
           fi
 
-          # 提取下載資訊
           FILE_NAME=$(echo "$DOWNLOAD_URL" | sed 's/.*\///')
-          # 從檔名粗略提取版本號
+          # 提取版本號 (例如 2.3.1)
           VERSION=$(echo "$FILE_NAME" | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -n 1)
           [ -z "$VERSION" ] && VERSION="legacy"
 
@@ -53,15 +52,27 @@ jobs:
           mkdir -p build_dir
           curl -L "${{ env.DOWNLOAD_URL }}" -o "build_dir/${{ env.FILE_NAME }}"
           
-          # 基本二進位驗證
-          if ! grep -q "debian-binary" build_dir/*.ipk; then
-            echo "❌ 錯誤：下載的 IPK 格式不正確"
+          # 取得檔案大小 (KB)
+          FILE_SIZE=$(du -k "build_dir/${{ env.FILE_NAME }}" | cut -f1)
+          echo "下載完成，大小: ${FILE_SIZE}KB"
+
+          # 智慧驗證：
+          # 1. 體積必須大於 50KB (Argon 通常在 300KB 以上)
+          if [ "$FILE_SIZE" -lt 50 ]; then
+            echo "❌ 錯誤：檔案體積異常太小，下載可能失敗"
             exit 1
           fi
 
-      - name: 📋 Create Installer Script (Opkg Optimized)
+          # 2. 檢查內容是否為 HTML (避免下載到 404 頁面)
+          if head -c 100 "build_dir/${{ env.FILE_NAME }}" | grep -qi "<html"; then
+            echo "❌ 錯誤：下載內容為 HTML 網頁而非 IPK 檔案"
+            exit 1
+          fi
+          
+          echo "✅ 檔案驗證通過"
+
+      - name: 📋 Create Installer Script (Opkg Only)
         run: |
-          # 這次針對 opkg 系統進行優化，移除 apk 邏輯避免混淆
           printf '#!/bin/sh\n' > build_dir/install.sh
           printf 'BASE_DIR=$(cd "$(dirname "$0")"; pwd)\n' >> build_dir/install.sh
           printf 'echo "-----------------------------------"\n' >> build_dir/install.sh
@@ -69,12 +80,12 @@ jobs:
           printf 'echo "-----------------------------------"\n' >> build_dir/install.sh
           
           printf 'if command -v opkg > /dev/null; then\n' >> build_dir/install.sh
-          printf '    echo "正在安裝: ${{ env.FILE_NAME }}..."\n' >> build_dir/install.sh
+          printf '    echo "發現 opkg，正在安裝: ${{ env.FILE_NAME }}..."\n' >> build_dir/install.sh
           printf '    opkg install "$BASE_DIR"/*.ipk\n' >> build_dir/install.sh
           printf '    rm -rf /tmp/luci-indexcache /tmp/luci-modulecache/\n' >> build_dir/install.sh
           printf '    echo "✅ 安裝完成！"\n' >> build_dir/install.sh
           printf 'else\n' >> build_dir/install.sh
-          printf '    echo "❌ 錯誤: 找不到 opkg 指令，此系統可能不支援 IPK"\n' >> build_dir/install.sh
+          printf '    echo "❌ 錯誤: 找不到 opkg 指令"\n' >> build_dir/install.sh
           printf '    exit 1\n' >> build_dir/install.sh
           printf 'fi\n' >> build_dir/install.sh
           
@@ -83,17 +94,17 @@ jobs:
       - name: 🛠️ Run Makeself
         run: |
           mkdir -p output
-          makeself build_dir "output/luci-theme-argon-${{ steps.get_info.outputs.VERSION }}_legacy_arm.run" "Argon Legacy Installer" ./install.sh
+          makeself build_dir "output/luci-theme-argon-${{ steps.get_info.outputs.VERSION }}_legacy.run" "Argon Legacy Installer" ./install.sh
 
       - name: 📤 Release
         uses: softprops/action-gh-release@v2
         with:
           tag_name: "argon-ipk-${{ steps.get_info.outputs.VERSION }}-${{ github.run_number }}"
-          name: "Argon Theme (Legacy IPK Version)"
+          name: "Argon Theme (Legacy IPK) v${{ steps.get_info.outputs.VERSION }}"
           body: |
-            ### 專為舊版 OpenWrt 構建
-            - **支援系統**: 使用 opkg 的 OpenWrt 版本 (如 WRT32X)
-            - **內含檔案**: ${{ env.FILE_NAME }}
-            - **來源網址**: ${{ env.DOWNLOAD_URL }}
+            ### 專為舊版系統 (WRT32X) 構建
+            - **格式**: IPK (傳統 opkg 管理器)
+            - **包含版本**: ${{ env.FILE_NAME }}
+            - **上游網址**: ${{ env.DOWNLOAD_URL }}
           files: output/*.run
           token: ${{ secrets.GITHUB_TOKEN }}
