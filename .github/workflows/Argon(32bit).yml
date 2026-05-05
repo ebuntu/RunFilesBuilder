@@ -1,4 +1,4 @@
-name: Make Argon Theme run files (Syntax Fixed)
+name: Make Argon Theme run files
 
 on:
   workflow_dispatch:
@@ -11,27 +11,23 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      - name: 📥 Checkout code
+      - name: 📥 Checkout
         uses: actions/checkout@v4
 
       - name: 📦 Install tools
         run: sudo apt-get update && sudo apt-get install -y makeself curl jq
 
-      - name: 🔍 Get Latest Release Info
+      - name: 🔍 Get Latest Info
         id: get_info
         run: |
           API_URL="https://api.github.com/repos/jerrykuku/luci-theme-argon/releases/latest"
           RESPONSE=$(curl -s "$API_URL")
-          
           LATEST_TAG=$(echo "$RESPONSE" | jq -r .tag_name)
-          # 提取純數字版本號
           VERSION=$(echo "$LATEST_TAG" | sed 's/[^0-9\.-]//g')
-          
-          # 獲取下載連結
           DOWNLOAD_URL=$(echo "$RESPONSE" | jq -r '.assets[] | select(.name | contains("luci-theme-argon") and endswith(".ipk")) | .browser_download_url' | head -n 1)
           
           if [ -z "$DOWNLOAD_URL" ] || [ "$DOWNLOAD_URL" == "null" ]; then
-            echo "❌ Error: Cannot find .ipk"
+            echo "❌ Error: Cannot find IPK"
             exit 1
           fi
 
@@ -46,6 +42,7 @@ jobs:
 
       - name: 📋 Create Installer Script
         run: |
+          # 修正重點：確保這裡的縮進與 run: 對齊，且內容被正確寫入
           cat << 'EOF' > build_dir/install.sh
 #!/bin/sh
 BASE_DIR=$(cd "$(dirname "$0")"; pwd)
@@ -63,14 +60,14 @@ EOF
       - name: 🛠️ Run Makeself
         run: |
           mkdir -p output
+          # 使用 steps 變數時確保格式正確
           makeself build_dir "output/luci-theme-argon-${{ steps.get_info.outputs.VERSION }}_arm_cortex-a9.run" "Argon Installer" ./install.sh
 
-      - name: 📤 Release to GitHub
+      - name: 📤 Release
         uses: softprops/action-gh-release@v2
         with:
-          # 修正重點：確保變數引用正確，並使用單引號包裹防止解析錯誤
           tag_name: "v${{ steps.get_info.outputs.VERSION }}-${{ github.run_number }}"
           name: "Argon Theme v${{ steps.get_info.outputs.VERSION }}"
-          body: "Build from upstream ${{ env.LATEST_TAG }}"
+          body: "Build from upstream: ${{ env.LATEST_TAG }}"
           files: output/*.run
           token: ${{ secrets.GITHUB_TOKEN }}
