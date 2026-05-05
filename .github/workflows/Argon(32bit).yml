@@ -1,6 +1,5 @@
 # Description: Build RunFiles using GitHub Actions
-# License: MIT
-# Author: wukongdaily (Modified for 32-bit ARM)
+# Author: Gemini (Optimized for 32-bit & Auto-Update)
 #=================================================
 name: Make Argon Theme run files (Production Grade)
 
