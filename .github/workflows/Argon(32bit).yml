@@ -2,7 +2,7 @@
 # License: MIT
 # Author: wukongdaily (Modified for 32-bit ARM)
 #=================================================
-name: Make Argon Theme run files
+name: Make Argon Theme run files (Full Auto-Fetch)
 
 on:
   workflow_dispatch:
@@ -12,66 +12,76 @@ jobs:
     runs-on: ubuntu-22.04
 
     steps:
-      - name: 📥 Checkout
+      - name: 📥 檢出程式碼
         uses: actions/checkout@v3
 
-      - name: 📦 安装 makeself 工具
-        run: sudo apt-get update && sudo apt-get install -y makeself curl
+      - name: 📦 安裝工具 (makeself, curl, jq)
+        run: sudo apt-get update && sudo apt-get install -y makeself curl jq
 
-      - name: 🚀 下载argon所有ipk
+      - name: 🔍 獲取 GitHub 最新版本資訊
+        id: get_version
         run: |
-          chmod +x shell/argon.sh
-          ./shell/argon.sh
-          # 注意：請確保你的 argon.sh 腳本內有下載 arm_cortex-a9 或 all 架構的 ipk 並放入對應資料夾
+          # 1. 調用 GitHub API 獲取最新發佈資訊
+          API_URL="https://api.github.com/repos/jerrykuku/luci-theme-argon/releases/latest"
+          RESPONSE=$(curl -s $API_URL)
+          
+          # 2. 提取 Tag 名稱 (例如 v2.3.1)
+          LATEST_TAG=$(echo "$RESPONSE" | jq -r .tag_name)
+          
+          # 3. 提取版本號數字部分 (例如 2.3.1)
+          # 使用 sed 過濾掉所有非數字、點、橫線的字元，確保版本號純淨
+          VERSION=$(echo "$LATEST_TAG" | sed 's/[^0-9\.-]//g')
+          
+          echo "LATEST_TAG=$LATEST_TAG" >> $GITHUB_ENV
+          echo "VERSION=$VERSION" >> $GITHUB_OUTPUT
+          echo "最新 Tag: $LATEST_TAG, 提取版本號: $VERSION"
 
-      - name: 📋 準備目錄與拷貝 install.sh
+      - name: 🚀 動態下載最新 IPK
         run: |
-          # 確保 32 位元目錄存在 (依照你的 OpenWrt ARCH 命名)
           mkdir -p arm_cortex-a9_vfpv3-d16
           
-          # 拷貝安裝腳本到所有目標目錄
-          for PLATFORM in x86_64 aarch64_generic arm_cortex-a9_vfpv3-d16; do
-            if [ -d "$PLATFORM" ]; then
-              cp shell/install.sh "$PLATFORM"/install.sh
-              chmod +x "$PLATFORM"/install.sh
-            fi
-          done
-
-      - name: 🔍 提取版本号并打包
-        id: pack
-        run: |
-          mkdir -p output
-
-          # 使用 aarch64 或 arm 的 ipk 提取版本號均可
-          ARGON_IPK=$(ls aarch64_generic/luci-theme-argon_*.ipk 2>/dev/null | head -n 1)
-          if [ -z "$ARGON_IPK" ]; then
-            ARGON_IPK=$(ls arm_cortex-a9_vfpv3-d16/luci-theme-argon_*.ipk 2>/dev/null | head -n 1)
-          fi
+          # 構造下載網址 (注意：Argon 的命名規則通常是 luci-theme-argon_${VERSION}_all.ipk)
+          IPK_NAME="luci-theme-argon_${{ steps.get_version.outputs.VERSION }}_all.ipk"
+          DOWNLOAD_URL="https://github.com/jerrykuku/luci-theme-argon/releases/download/${{ env.LATEST_TAG }}/${IPK_NAME}"
           
-          VERSION=$(basename "$ARGON_IPK" | sed -n 's/^luci-theme-argon_\([^-]*-[^_]*\)_.*$/\1/p')
-
-          if [ -z "$VERSION" ]; then
-            echo "❌ 无法提取版本号，請檢查 ipk 是否成功下載至目錄"
+          echo "正在嘗試從此網址下載: $DOWNLOAD_URL"
+          
+          # 執行下載並重新命名為固定的檔名方便 install.sh 調用
+          curl -L "$DOWNLOAD_URL" -o arm_cortex-a9_vfpv3-d16/luci-theme-argon_all.ipk
+          
+          # 驗證下載結果
+          if [ ! -s arm_cortex-a9_vfpv3-d16/luci-theme-argon_all.ipk ]; then
+            echo "❌ 錯誤：找不到該版本的 .ipk 檔案，請檢查 upstream 命名規則是否變更。"
             exit 1
           fi
 
-          echo "version=$VERSION" >> $GITHUB_OUTPUT
+      - name: 📋 注入安裝腳本
+        run: |
+          # 確保你的 shell/install.sh 存在
+          if [ -f "shell/install.sh" ]; then
+            cp shell/install.sh arm_cortex-a9_vfpv3-d16/install.sh
+            chmod +x arm_cortex-a9_vfpv3-d16/install.sh
+          else
+            echo "❌ 找不到 shell/install.sh，請檢查倉庫路徑"
+            exit 1
+          fi
 
-          # 遍歷三個平台進行打包 (增加 32位元的 arm_cortex-a9_vfpv3-d16)
-          for PLATFORM in x86_64 aarch64_generic arm_cortex-a9_vfpv3-d16; do
-            if [ -d "$PLATFORM" ] && [ "$(ls -A $PLATFORM)" ]; then
-              makeself "$PLATFORM" "output/luci-theme-argon-${VERSION}_${PLATFORM}.run" \
-                "argon ${PLATFORM} Installer v${VERSION}" ./install.sh
-            fi
-          done
+      - name: 🛠️ 執行 Makeself 打包
+        run: |
+          mkdir -p output
+          # 打包輸出檔案名稱包含動態版本號
+          makeself arm_cortex-a9_vfpv3-d16 "output/luci-theme-argon-${{ steps.get_version.outputs.VERSION }}_arm_cortex-a9.run" \
+            "Argon Theme Installer v${{ steps.get_version.outputs.VERSION }}" ./install.sh
 
-      - name: 📤 上传 .run 文件到 release
-        uses: softprops/action-gh-release@v2.1.0
+      - name: 📤 發佈到 Release
+        uses: softprops/action-gh-release@v2
         with:
-          tag_name: "argon-${{ steps.pack.outputs.version }}"
-          name: "argon-${{ steps.pack.outputs.version }}"
-          body: "Auto-generated Argon Theme RunFiles for x86_64, aarch64, and arm_cortex-a9"
+          tag_name: "argon-${{ steps.get_version.outputs.VERSION }}-${{ github.run_number }}"
+          name: "Argon Theme ${{ steps.get_version.outputs.VERSION }} 自動打包"
+          body: |
+            ### 自動構建資訊
+            - **來源版本**: ${{ env.LATEST_TAG }}
+            - **構建架構**: arm_cortex-a9 (32-bit)
+            - **構建時間**: ${{ github.event.head_commit.timestamp }}
           files: output/*.run
           token: ${{ secrets.GITHUB_TOKEN }}
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
