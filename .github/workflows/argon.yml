@@ -1,11 +1,5 @@
-#=================================================
-# https://github.com/wukongdaily/RunFilesBuilder
-# Description: Build RunFiles using GitHub Actions
-# Lisence: MIT
-# Author: wukongdaily
-# Blog: wkdaily.cpolar.cn
-#=================================================
-name: Make Argon Theme run files
+# .github/workflows/build.yml
+name: Make Argon Theme run files (with WRT32X support)
 
 on:
   workflow_dispatch:
@@ -21,31 +15,39 @@ jobs:
       - name: 📦 安装 makeself 工具
         run: sudo apt-get update && sudo apt-get install -y makeself curl
 
-      - name: 🚀 下载argon所有ipk
+      - name: 🚀 下载argon所有ipk（x86_64, aarch64, arm_cortex-a9）
         run: |
           chmod +x shell/argon.sh
           ./shell/argon.sh
 
-# 在 make-run job 的步驟中，把原本的兩個平台擴充為三個
-- name: 📋 複製 install.sh 到各平台目錄
-  run: |
-    for plat in x86_64 aarch64_generic arm_cortex-a9_vfpv3; do
-      cp shell/install.sh $plat/install.sh
-      chmod +x $plat/install.sh
-    done
+      - name: 📋 拷贝 install.sh 到各平台目录
+        run: |
+          for plat in x86_64 aarch64_generic arm_cortex-a9_vfpv3; do
+            cp shell/install.sh "$plat/install.sh"
+            chmod +x "$plat/install.sh"
+          done
 
-- name: 🔍 提取版本號並打包
-  run: |
-    mkdir -p output
-    # 以一個平台的 IPK 取出版本號（內容一致）
-    ARGON_IPK=$(ls arm_cortex-a9_vfpv3/luci-theme-argon_*.ipk | head -n1)
-    VERSION=$(basename "$ARGON_IPK" | sed -n 's/^luci-theme-argon_\([^-]*-[^_]*\)_.*$/\1/p')
-    echo "version=$VERSION" >> $GITHUB_OUTPUT
+      - name: 🔍 提取版本号并打包
+        id: pack
+        run: |
+          mkdir -p output
 
-    for plat in x86_64 aarch64_generic arm_cortex-a9_vfpv3; do
-      makeself "$plat" "output/luci-theme-argon-${VERSION}_${plat}.run" \
-        "argon ${plat} Installer v${VERSION}" ./install.sh
-    done
+          # 从任一平台的 IPK 提取版本号（以 arm_cortex-a9_vfpv3 为例）
+          ARGON_IPK=$(ls arm_cortex-a9_vfpv3/luci-theme-argon_*.ipk | head -n 1)
+          VERSION=$(basename "$ARGON_IPK" | sed -n 's/^luci-theme-argon_\([^-]*-[^_]*\)_.*$/\1/p')
+
+          if [ -z "$VERSION" ]; then
+            echo "❌ 无法提取版本号"
+            exit 1
+          fi
+
+          echo "version=$VERSION" >> $GITHUB_OUTPUT
+
+          # 打包三个平台
+          for PLATFORM in x86_64 aarch64_generic arm_cortex-a9_vfpv3; do
+            makeself "$PLATFORM" "output/luci-theme-argon-${VERSION}_${PLATFORM}.run" \
+              "argon ${PLATFORM} Installer v${VERSION}" ./install.sh
+          done
 
       - name: 📤 上传 .run 文件到 release
         uses: softprops/action-gh-release@v2.1.0
@@ -55,5 +57,3 @@ jobs:
           body_path: ${{ github.workspace }}/common.md
           files: output/*.run
           token: ${{ secrets.GITHUB_TOKEN }}
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
