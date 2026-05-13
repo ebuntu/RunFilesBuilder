@@ -1,4 +1,3 @@
-# .github/workflows/build.yml
 name: Make Argon Theme run files (with WRT32X support)
 
 on:
@@ -7,7 +6,6 @@ on:
 jobs:
   make-run:
     runs-on: ubuntu-22.04
-
     steps:
       - name: 📥 Checkout
         uses: actions/checkout@v3
@@ -31,19 +29,13 @@ jobs:
         id: pack
         run: |
           mkdir -p output
-
-          # 从任一平台的 IPK 提取版本号（以 arm_cortex-a9_vfpv3 为例）
           ARGON_IPK=$(ls arm_cortex-a9_vfpv3/luci-theme-argon_*.ipk | head -n 1)
           VERSION=$(basename "$ARGON_IPK" | sed -n 's/^luci-theme-argon_\([^-]*-[^_]*\)_.*$/\1/p')
-
           if [ -z "$VERSION" ]; then
             echo "❌ 无法提取版本号"
             exit 1
           fi
-
           echo "version=$VERSION" >> $GITHUB_OUTPUT
-
-          # 打包三个平台
           for PLATFORM in x86_64 aarch64_generic arm_cortex-a9_vfpv3; do
             makeself "$PLATFORM" "output/luci-theme-argon-${VERSION}_${PLATFORM}.run" \
               "argon ${PLATFORM} Installer v${VERSION}" ./install.sh
